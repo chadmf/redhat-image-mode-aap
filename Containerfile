@@ -1,44 +1,32 @@
-MAINTAINER chadmf
-
 FROM registry.redhat.io/rhel9/rhel-bootc:9.6
 
-ENV tarball=${tarball}
+LABEL maintainer="chadmf"
+LABEL description="Red Hat Ansible Automation Platform on RHEL bootc"
+LABEL version="2.5"
 
-#install software
-RUN dnf -y install tmux mkpasswd wget
-
-#configure bootc-user
-RUN pass=$(mkpasswd --method=SHA-512 --rounds=4096 redhat) && useradd -m -G wheel bootc-user -p $pass
-
-#setup sudo to not require password
-RUN echo "%wheel        ALL=(ALL)       NOPASSWD: ALL" > /etc/sudoers.d/wheel-sudo
-
-#Using the optional heredoc format to help simplify the number of times we call RUN
-
-
-#configure web server and relocate the webroot to be read-only and managed by this container image
+#configure dnf and install packages
 RUN dnf config-manager --add-repo rhel-9-for-x86_64-appstream-rpms 
-RUN dnf install -y ansible-core wget git rsync
+RUN dnf install -y ansible-core wget git rsync tmux mkpasswd wget sudo crun podman slirp4netns fuse-overlayfs polkit
 
-#RUN hostnamectl set-hostname aap-aio.local
-RUN echo "127.0.0.1 aap-aio.local" >> /etc/hosts
+#configure ansible user
+RUN pass=$(mkpasswd --method=SHA-512 --rounds=4096 ${ANSIBLE_USER_PASS}) && useradd -m -G wheel ansible -p $pass
 
-# Create working directory for AAP installation
-WORKDIR /opt/aap-installer
+#setup sudo to not require password and fix PAM issues for containers
+RUN echo "%wheel        ALL=(ALL)       NOPASSWD: ALL" > /etc/sudoers.d/wheel-sudo && \
+    echo "ansible ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/ansible && \
+    chmod 440 /etc/sudoers.d/wheel-sudo /etc/sudoers.d/ansible
 
-# Copy inventory file first
-COPY inventory.txt .
+#copy quadlet files
+COPY quadlet/* /etc/containers/systemd/.
+RUN chown ansible:ansible /etc/containers/systemd/*
 
-# Copy and extract the AAP installer bundle from build context
-COPY ansible-automation-platform-containerized-setup-bundle.tar.gz ./
-RUN tar -xzf ansible-automation-platform-containerized-setup-bundle-*.tar.gz --strip-components=1
-
-#Install AAP
-RUN ansible-playbook -i inventory.txt ansible.containerized_installer.install
-
-#clean up caches in the image and lint the container
-RUN rm /var/{cache,lib}/dnf /var/lib/rhsm /var/cache/ldconfig -rf
-RUN rm /opt/aap-installer/ansible-automation-platform-containerized-setup-bundle-*.tar.gz
 RUN bootc container lint
 
-EXPOSE 8443
+#clean up caches and install directory in the image and lint the container
+RUN rm /var/{cache,lib}/dnf /var/lib/rhsm /var/cache/ldconfig -rf
+RUN bootc container lint
+
+# Set final user for runtime
+USER ansible
+
+EXPOSE 80 443 8443 5001 5000 3000 8002 8081 27199 44321
