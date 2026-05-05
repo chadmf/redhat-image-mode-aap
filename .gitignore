@@ -1,1 +1,62 @@
-ansible-automation-platform-containerized-setup-bundle-2.5-15.1-aarch64.tar.gz?***REMOVED***&***REMOVED***
+# AAP Installer Bundles
+*.tar.gz
+*.tar
+*.zip
+ansible-automation-platform-*.tar.gz
+
+# Ansible Inventory and Secrets
+inventory.txt
+inventory
+*.vault
+vault-password.txt
+
+# Credentials and Secrets
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+.env
+.env.*
+!.env.example
+
+# Red Hat Subscription and Tokens
+*.token
+auth.json
+pull-secret.json
+
+# Build Artifacts
+*.rpm
+*.iso
+*.qcow2
+*.img
+
+# Logs
+*.log
+logs/
+*.out
+
+# IDE and Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Temporary Files
+tmp/
+temp/
+*.tmp
+.cache/
