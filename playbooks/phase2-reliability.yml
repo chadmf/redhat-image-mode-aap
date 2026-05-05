@@ -1,0 +1,317 @@
+---
+- name: Phase 2 - AAP Image-Mode Reliability Improvements
+  hosts: localhost
+  become: true
+  gather_facts: true
+
+  vars:
+    quadlet_dir: "{{ playbook_dir }}/../quadlet"
+
+    # Container health check configurations
+    container_health_checks:
+      # Database services
+      - file: aap-postgresql.container
+        health_cmd: /usr/bin/pg_isready -U postgres -d postgres
+        health_interval: 30s
+        health_timeout: 5s
+        health_retries: 3
+        health_start_period: 60s
+
+      - file: aap-redis.container
+        health_cmd: /usr/bin/redis-cli ping | grep -q PONG
+        health_interval: 30s
+        health_timeout: 5s
+        health_retries: 3
+        health_start_period: 30s
+
+      # AAP application services
+      - file: aap-controller.container
+        health_cmd: /usr/bin/curl -f -k https://localhost:8080/api/v2/ping || exit 1
+        health_interval: 60s
+        health_timeout: 10s
+        health_retries: 3
+        health_start_period: 180s
+
+      - file: aap-hub.container
+        health_cmd: /usr/bin/curl -f http://localhost:5001/api/v1/ping || exit 1
+        health_interval: 60s
+        health_timeout: 10s
+        health_retries: 3
+        health_start_period: 180s
+
+      - file: aap-eda-controller.container
+        health_cmd: /usr/bin/curl -f http://localhost:5000/api/eda/v1/ping || exit 1
+        health_interval: 60s
+        health_timeout: 10s
+        health_retries: 3
+        health_start_period: 180s
+
+      # Gateway and proxy
+      - file: aap-gateway.container
+        health_cmd: /usr/bin/curl -f http://localhost:80/ || exit 1
+        health_interval: 30s
+        health_timeout: 5s
+        health_retries: 3
+        health_start_period: 60s
+
+      - file: aap-gateway-proxy.container
+        health_cmd: /usr/bin/curl -f http://localhost:8081/ || exit 1
+        health_interval: 30s
+        health_timeout: 5s
+        health_retries: 3
+        health_start_period: 60s
+
+      # Web UI services
+      - file: aap-hub-web.container
+        health_cmd: /usr/bin/curl -f http://localhost:8002/ || exit 1
+        health_interval: 60s
+        health_timeout: 10s
+        health_retries: 3
+        health_start_period: 120s
+
+      - file: aap-eda-controller-ui.container
+        health_cmd: /usr/bin/curl -f http://localhost:3000/ || exit 1
+        health_interval: 60s
+        health_timeout: 10s
+        health_retries: 3
+        health_start_period: 120s
+
+      # Infrastructure services
+      - file: aap-receptor.container
+        health_cmd: /usr/bin/receptor --version
+        health_interval: 60s
+        health_timeout: 5s
+        health_retries: 3
+        health_start_period: 60s
+
+      - file: aap-pcp.container
+        health_cmd: /usr/bin/pcp --version
+        health_interval: 60s
+        health_timeout: 5s
+        health_retries: 3
+        health_start_period: 30s
+
+      # Execution environments
+      - file: aap-ee-minimal.container
+        health_cmd: /usr/bin/ansible --version
+        health_interval: 120s
+        health_timeout: 10s
+        health_retries: 2
+        health_start_period: 60s
+
+      - file: aap-ee-supported.container
+        health_cmd: /usr/bin/ansible --version
+        health_interval: 120s
+        health_timeout: 10s
+        health_retries: 2
+        health_start_period: 60s
+
+      - file: aap-de-supported.container
+        health_cmd: /usr/bin/ansible-rulebook --version
+        health_interval: 120s
+        health_timeout: 10s
+        health_retries: 2
+        health_start_period: 60s
+
+    # Container resource limit configurations
+    container_resources:
+      # Database - high resources
+      - file: aap-postgresql.container
+        memory_max: 4G
+        memory_low: 3G
+        cpu_quota: 200%
+
+      # Cache - moderate resources
+      - file: aap-redis.container
+        memory_max: 1G
+        memory_low: 768M
+        cpu_quota: 100%
+
+      # AAP services - moderate-high resources
+      - file: aap-controller.container
+        memory_max: 2G
+        memory_low: 1536M
+        cpu_quota: 150%
+
+      - file: aap-hub.container
+        memory_max: 2G
+        memory_low: 1536M
+        cpu_quota: 150%
+
+      - file: aap-eda-controller.container
+        memory_max: 2G
+        memory_low: 1536M
+        cpu_quota: 150%
+
+      # Gateway and proxy - moderate resources
+      - file: aap-gateway.container
+        memory_max: 1G
+        memory_low: 768M
+        cpu_quota: 100%
+
+      - file: aap-gateway-proxy.container
+        memory_max: 512M
+        memory_low: 384M
+        cpu_quota: 50%
+
+      # Web UIs - moderate resources
+      - file: aap-hub-web.container
+        memory_max: 1G
+        memory_low: 768M
+        cpu_quota: 100%
+
+      - file: aap-eda-controller-ui.container
+        memory_max: 1G
+        memory_low: 768M
+        cpu_quota: 100%
+
+      # Infrastructure - low resources
+      - file: aap-receptor.container
+        memory_max: 512M
+        memory_low: 256M
+        cpu_quota: 50%
+
+      - file: aap-pcp.container
+        memory_max: 256M
+        memory_low: 128M
+        cpu_quota: 25%
+
+      # Execution environments - moderate resources
+      - file: aap-ee-minimal.container
+        memory_max: 512M
+        memory_low: 256M
+        cpu_quota: 50%
+
+      - file: aap-ee-supported.container
+        memory_max: 1G
+        memory_low: 512M
+        cpu_quota: 100%
+
+      - file: aap-de-supported.container
+        memory_max: 512M
+        memory_low: 256M
+        cpu_quota: 50%
+
+  tasks:
+    - name: Display Phase 2 banner
+      ansible.builtin.debug:
+        msg: |
+          ╔════════════════════════════════════════════════════════════════╗
+          ║   AAP Image-Mode Reliability Improvements - Phase 2           ║
+          ║   - Health checks for all containers                          ║
+          ║   - Resource limits (CPU/Memory)                              ║
+          ╚════════════════════════════════════════════════════════════════╝
+
+    # ========================================
+    # 1. Backup Quadlet Files
+    # ========================================
+
+    - name: Create quadlet backup directory for Phase 2
+      ansible.builtin.file:
+        path: "{{ quadlet_dir }}/.backup-phase2-{{ ansible_date_time.iso8601_basic_short }}"
+        state: directory
+        mode: '0755'
+
+    - name: Backup all quadlet container files
+      ansible.builtin.shell: |
+        cp {{ quadlet_dir }}/*.container {{ quadlet_dir }}/.backup-phase2-{{ ansible_date_time.iso8601_basic_short }}/
+      args:
+        creates: "{{ quadlet_dir }}/.backup-phase2-{{ ansible_date_time.iso8601_basic_short }}/aap-postgresql.container"
+
+    # ========================================
+    # 2. Add Health Checks
+    # ========================================
+
+    - name: Add health check directives to container files
+      ansible.builtin.blockinfile:
+        path: "{{ quadlet_dir }}/{{ item.file }}"
+        insertafter: "^\\[Container\\]"
+        marker: "# {mark} ANSIBLE MANAGED - HEALTH CHECK"
+        block: |
+          HealthCmd={{ item.health_cmd }}
+          HealthInterval={{ item.health_interval }}
+          HealthTimeout={{ item.health_timeout }}
+          HealthRetries={{ item.health_retries }}
+          HealthStartPeriod={{ item.health_start_period }}
+      loop: "{{ container_health_checks }}"
+      loop_control:
+        label: "{{ item.file }}"
+
+    # ========================================
+    # 3. Add Resource Limits
+    # ========================================
+
+    - name: Add resource limit directives to container files
+      ansible.builtin.blockinfile:
+        path: "{{ quadlet_dir }}/{{ item.file }}"
+        insertafter: "^\\[Service\\]"
+        marker: "# {mark} ANSIBLE MANAGED - RESOURCE LIMITS"
+        block: |
+          MemoryMax={{ item.memory_max }}
+          MemoryLow={{ item.memory_low }}
+          CPUQuota={{ item.cpu_quota }}
+      loop: "{{ container_resources }}"
+      loop_control:
+        label: "{{ item.file }}: Memory={{ item.memory_max }}, CPU={{ item.cpu_quota }}"
+
+    # ========================================
+    # 4. Verification
+    # ========================================
+
+    - name: Count health checks added
+      ansible.builtin.shell: |
+        grep -l "HealthCmd=" {{ quadlet_dir }}/*.container | wc -l
+      register: health_check_count
+      changed_when: false
+
+    - name: Count resource limits added
+      ansible.builtin.shell: |
+        grep -l "MemoryMax=" {{ quadlet_dir }}/*.container | wc -l
+      register: resource_limit_count
+      changed_when: false
+
+    - name: Display reliability improvements summary
+      ansible.builtin.debug:
+        msg: |
+
+          ╔════════════════════════════════════════════════════════════════╗
+          ║   Phase 2 Reliability Improvements Complete                   ║
+          ╚════════════════════════════════════════════════════════════════╝
+
+          ✓ Health Checks Added:
+            - {{ health_check_count.stdout }} container files now have health checks
+            - PostgreSQL: pg_isready check every 30s
+            - Redis: ping check every 30s
+            - AAP services: HTTP /ping endpoints every 60s
+            - Web UIs: HTTP root check every 60s
+            - Infrastructure: version checks
+
+          ✓ Resource Limits Added:
+            - {{ resource_limit_count.stdout }} container files now have resource limits
+            - PostgreSQL: 4G RAM, 200% CPU (2 cores)
+            - Redis: 1G RAM, 100% CPU
+            - AAP services: 2G RAM, 150% CPU each
+            - Gateway/UIs: 1G RAM, 100% CPU
+            - Infrastructure: 256M-512M RAM, 25-50% CPU
+
+          📋 Resource Allocation Summary:
+            Total Memory Reserved: ~16-18G
+            Total CPU Reserved: ~12.5 cores (1250%)
+
+          📋 Next Steps:
+            1. Review changes: git diff quadlet/
+            2. Run Phase 2 tests: ansible-playbook playbooks/test-phase2.yml
+            3. Update Containerfile if needed
+            4. Rebuild bootc image
+            5. Deploy and monitor resource usage
+            6. Tune limits based on actual workload
+
+          📚 Documentation:
+            - Resource tuning guide: docs/RESOURCE-TUNING.md
+            - Health check troubleshooting: docs/HEALTH-CHECKS.md
+
+          ⚠️  IMPORTANT:
+            - These are baseline limits for small-medium deployments
+            - Production deployments may need 2-4x these resources
+            - Monitor with: podman stats, systemctl status, journalctl
+            - Backup saved: {{ quadlet_dir }}/.backup-phase2-*

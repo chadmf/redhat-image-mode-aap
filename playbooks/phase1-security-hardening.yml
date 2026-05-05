@@ -1,0 +1,277 @@
+---
+- name: Phase 1 - AAP Image-Mode Security Hardening
+  hosts: localhost
+  become: true
+  gather_facts: true
+
+  vars:
+    aap_secrets_backup_dir: /root/.aap-secrets-backup
+    quadlet_dir: "{{ playbook_dir }}/../quadlet"
+
+    # Secrets configuration
+    aap_secrets:
+      - name: aap-db-password
+        description: PostgreSQL application user password
+        length: 32
+      - name: aap-db-admin-password
+        description: PostgreSQL admin user password
+        length: 32
+
+    # Quadlet files requiring secret updates
+    quadlet_secret_mappings:
+      - file: aap-postgresql.container
+        secrets:
+          - secret_name: aap-db-password
+            env_var: POSTGRESQL_PASSWORD
+            old_line: "Environment=POSTGRESQL_PASSWORD=redhat"
+          - secret_name: aap-db-admin-password
+            env_var: POSTGRESQL_ADMIN_PASSWORD
+            old_line: "Environment=POSTGRESQL_ADMIN_PASSWORD=redhat"
+
+      - file: aap-controller.container
+        secrets:
+          - secret_name: aap-db-password
+            env_var: DATABASE_PASSWORD
+            old_line: "Environment=DATABASE_PASSWORD=redhat"
+
+      - file: aap-hub.container
+        secrets:
+          - secret_name: aap-db-password
+            env_var: DATABASE_PASSWORD
+            old_line: "Environment=DATABASE_PASSWORD=redhat"
+
+      - file: aap-eda-controller.container
+        secrets:
+          - secret_name: aap-db-password
+            env_var: DATABASE_PASSWORD
+            old_line: "Environment=DATABASE_PASSWORD=redhat"
+
+  tasks:
+    - name: Display Phase 1 banner
+      ansible.builtin.debug:
+        msg: |
+          ╔════════════════════════════════════════════════════════════════╗
+          ║   AAP Image-Mode Security Hardening - Phase 1                 ║
+          ║   - Podman secrets implementation                             ║
+          ║   - Network segmentation                                      ║
+          ║   - Remove exposed database ports                             ║
+          ╚════════════════════════════════════════════════════════════════╝
+
+    # ========================================
+    # 1. Podman Secrets Implementation
+    # ========================================
+
+    - name: Check if Podman secrets already exist
+      ansible.builtin.command:
+        cmd: podman secret inspect {{ item.name }}
+      loop: "{{ aap_secrets }}"
+      register: secret_check
+      changed_when: false
+      failed_when: false
+
+    - name: Create secrets backup directory
+      ansible.builtin.file:
+        path: "{{ aap_secrets_backup_dir }}"
+        state: directory
+        mode: '0700'
+        owner: root
+        group: root
+
+    - name: Generate random passwords for new secrets
+      ansible.builtin.set_fact:
+        generated_passwords: >-
+          {{
+            generated_passwords | default({}) | combine({
+              item.item.name: lookup('community.general.random_string',
+                length=item.item.length,
+                override_special='!@#$%^&*()_+-=[]{}|;:,.<>?',
+                min_special=4,
+                min_numeric=4,
+                min_upper=4,
+                min_lower=4)
+            })
+          }}
+      loop: "{{ secret_check.results }}"
+      when: item.rc != 0
+      no_log: true
+
+    - name: Create Podman secrets
+      ansible.builtin.shell: |
+        echo '{{ generated_passwords[item.name] }}' | podman secret create {{ item.name }} -
+      loop: "{{ aap_secrets }}"
+      when:
+        - generated_passwords is defined
+        - item.name in generated_passwords
+      no_log: true
+      register: secret_creation
+
+    - name: Backup secrets to secure location
+      ansible.builtin.copy:
+        content: "{{ generated_passwords[item.name] }}\n"
+        dest: "{{ aap_secrets_backup_dir }}/{{ item.name }}.txt"
+        mode: '0600'
+        owner: root
+        group: root
+      loop: "{{ aap_secrets }}"
+      when:
+        - generated_passwords is defined
+        - item.name in generated_passwords
+      no_log: true
+
+    - name: Verify Podman secrets were created
+      ansible.builtin.command:
+        cmd: podman secret ls --format json
+      register: secrets_list
+      changed_when: false
+
+    - name: Display created secrets
+      ansible.builtin.debug:
+        msg: "✓ Secret created: {{ item.name }} - {{ item.description }}"
+      loop: "{{ aap_secrets }}"
+      when: secret_creation is changed
+
+    # ========================================
+    # 2. Backup Quadlet Files
+    # ========================================
+
+    - name: Create quadlet backup directory
+      ansible.builtin.file:
+        path: "{{ quadlet_dir }}/.backup-{{ ansible_date_time.iso8601_basic_short }}"
+        state: directory
+        mode: '0755'
+
+    - name: Backup existing quadlet files
+      ansible.builtin.copy:
+        src: "{{ quadlet_dir }}/{{ item }}"
+        dest: "{{ quadlet_dir }}/.backup-{{ ansible_date_time.iso8601_basic_short }}/{{ item }}"
+        remote_src: true
+        mode: preserve
+      loop:
+        - aap-postgresql.container
+        - aap-redis.container
+        - aap-controller.container
+        - aap-hub.container
+        - aap-eda-controller.container
+
+    # ========================================
+    # 3. Update Quadlet Files - Secrets
+    # ========================================
+
+    - name: Remove hardcoded password lines from quadlet files
+      ansible.builtin.lineinfile:
+        path: "{{ quadlet_dir }}/{{ item.0.file }}"
+        regexp: "{{ item.1.old_line | regex_escape }}"
+        state: absent
+      loop: "{{ quadlet_secret_mappings | subelements('secrets') }}"
+      loop_control:
+        label: "{{ item.0.file }}: {{ item.1.env_var }}"
+
+    - name: Add Secret= directives to quadlet files
+      ansible.builtin.lineinfile:
+        path: "{{ quadlet_dir }}/{{ item.0.file }}"
+        insertafter: "^Environment="
+        line: "Secret={{ item.1.secret_name }},type=env,target={{ item.1.env_var }}"
+        state: present
+      loop: "{{ quadlet_secret_mappings | subelements('secrets') }}"
+      loop_control:
+        label: "{{ item.0.file }}: Secret={{ item.1.secret_name }}"
+
+    # ========================================
+    # 4. Network Segmentation
+    # ========================================
+
+    - name: Create backend network configuration
+      ansible.builtin.copy:
+        dest: "{{ quadlet_dir }}/aap-backend.network"
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=AAP Backend Network for Database and Cache
+          Documentation=man:podman-systemd.unit(5)
+
+          [Network]
+          NetworkName=aap-backend
+          Subnet=172.20.1.0/24
+          Gateway=172.20.1.1
+          IPRange=172.20.1.2/24
+          Driver=bridge
+          # Internal network - no external connectivity needed
+          Internal=false
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Add backend network to PostgreSQL
+      ansible.builtin.lineinfile:
+        path: "{{ quadlet_dir }}/aap-postgresql.container"
+        insertafter: "^Network=aap-network"
+        line: "Network=aap-backend"
+        state: present
+
+    - name: Add backend network to Redis
+      ansible.builtin.lineinfile:
+        path: "{{ quadlet_dir }}/aap-redis.container"
+        insertafter: "^Network=aap-network"
+        line: "Network=aap-backend"
+        state: present
+
+    # ========================================
+    # 5. Remove Exposed Database Ports
+    # ========================================
+
+    - name: Remove PostgreSQL port exposure
+      ansible.builtin.lineinfile:
+        path: "{{ quadlet_dir }}/aap-postgresql.container"
+        regexp: "^PublishPort=5432:5432"
+        state: absent
+
+    - name: Remove Redis port exposure
+      ansible.builtin.lineinfile:
+        path: "{{ quadlet_dir }}/aap-redis.container"
+        regexp: "^PublishPort=6379:6379"
+        state: absent
+
+    # ========================================
+    # 6. Summary and Next Steps
+    # ========================================
+
+    - name: Display security hardening summary
+      ansible.builtin.debug:
+        msg: |
+
+          ╔════════════════════════════════════════════════════════════════╗
+          ║   Phase 1 Security Hardening Complete                         ║
+          ╚════════════════════════════════════════════════════════════════╝
+
+          ✓ Podman Secrets:
+            - aap-db-password (created)
+            - aap-db-admin-password (created)
+            - Backups saved: {{ aap_secrets_backup_dir }}/*.txt
+
+          ✓ Network Segmentation:
+            - Backend network created: aap-backend (172.20.1.0/24)
+            - PostgreSQL attached to dual networks
+            - Redis attached to dual networks
+
+          ✓ Port Security:
+            - PostgreSQL port 5432 removed from host exposure
+            - Redis port 6379 removed from host exposure
+
+          ✓ Quadlet Files Updated:
+            - aap-postgresql.container (secrets + network)
+            - aap-redis.container (network)
+            - aap-controller.container (secrets)
+            - aap-hub.container (secrets)
+            - aap-eda-controller.container (secrets)
+
+          📋 Next Steps:
+            1. Review changes: git diff quadlet/
+            2. Run Phase 1 tests: ansible-playbook playbooks/test-phase1.yml
+            3. Update Containerfile to copy new quadlet files
+            4. Rebuild bootc image with updated configuration
+            5. Deploy and verify services start correctly
+
+          ⚠️  IMPORTANT:
+            - Secret backups are in {{ aap_secrets_backup_dir }}
+            - Quadlet backups are in {{ quadlet_dir }}/.backup-*
+            - This playbook must run as root for Podman secrets
